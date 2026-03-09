@@ -572,17 +572,19 @@ function SetupModal({ onClose, patches, setPatches }) {
         {tab === 'setup' && (
           <div className="space-y-4">
             <div className="neu-pressed p-4 space-y-3 text-xs text-neu-text">
-              <p className="font-semibold text-neu-accent">One-time setup (2 minutes):</p>
+              <p className="font-semibold text-neu-accent">One-time setup (3 minutes):</p>
               <ol className="list-decimal list-inside space-y-2 text-neu-muted">
                 <li>Create a new <strong className="text-neu-text">Google Spreadsheet</strong></li>
-                <li>Go to <strong className="text-neu-text">Extensions → Apps Script</strong></li>
+                <li>Create a <strong className="text-neu-text">Google Drive folder</strong> for patch files</li>
+                <li>Copy the folder ID from the URL: <code className="text-[10px] text-neu-accent bg-neu-dark px-1 py-0.5 rounded">drive.google.com/drive/folders/<strong>THIS_IS_THE_ID</strong></code></li>
+                <li>In the Spreadsheet, go to <strong className="text-neu-text">Extensions → Apps Script</strong></li>
                 <li>Delete any existing code and <strong className="text-neu-text">paste the script</strong> below</li>
-                <li>Click <strong className="text-neu-text">Deploy → New deployment</strong></li>
-                <li>Select type: <strong className="text-neu-text">Web app</strong></li>
+                <li>Set <code className="text-[10px] text-neu-accent bg-neu-dark px-1 py-0.5 rounded">DRIVE_FOLDER_ID</code> in the script to your folder ID</li>
+                <li>Click <strong className="text-neu-text">Deploy → New deployment → Web app</strong></li>
                 <li>Execute as: <strong className="text-neu-text">Me</strong> — Access: <strong className="text-neu-text">Anyone</strong></li>
-                <li>Click Deploy, authorize when prompted</li>
+                <li>Click Deploy, authorize when prompted (only Sheets + Drive create access)</li>
                 <li><strong className="text-neu-text">Copy the Web App URL</strong> → paste in Connect tab</li>
-                <li>Share the Google Sheet with your team for viewing</li>
+                <li>Share the Sheet & Drive folder with your team manually (view or edit)</li>
               </ol>
             </div>
 
@@ -604,8 +606,9 @@ function SetupModal({ onClose, patches, setPatches }) {
             <div className="neu-pressed-sm p-3 flex items-start gap-2">
               <AlertCircle size={14} className="text-amber-400 shrink-0 mt-0.5" />
               <p className="text-[10px] text-neu-muted">
-                <strong className="text-amber-300">No Google Cloud Console needed!</strong> This uses Google Apps Script which is free and doesn't require OAuth credentials.
-                Files are uploaded to Google Drive and data is stored in Google Sheets. Share the Sheet with your team for collaboration.
+                <strong className="text-amber-300">No Google Cloud Console needed!</strong> This uses Google Apps Script (free).
+                The script only gets access to the current spreadsheet and can only create files in the folder you specify — no delete access, no access to your other files.
+                You control sharing manually.
               </p>
             </div>
           </div>

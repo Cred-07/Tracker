@@ -3,13 +3,16 @@
  *
  * Setup (one-time, by any team member):
  *  1. Create a Google Sheet
- *  2. Extensions → Apps Script → paste the script from the setup guide
- *  3. Deploy → Web app → Execute as "Me", access "Anyone"
- *  4. Copy the Web App URL → paste into Patch Tracker settings
- *  5. Share the Google Sheet & Drive folder with your team
+ *  2. Create a Google Drive folder for patch files, copy its folder ID from the URL
+ *  3. Extensions → Apps Script → paste the script from the setup guide
+ *  4. Update DRIVE_FOLDER_ID in the script with your folder ID
+ *  5. Deploy → Web app → Execute as "Me", access "Anyone"
+ *  6. Copy the Web App URL → paste into Patch Tracker settings
+ *  7. Share the Google Sheet & Drive folder with your team manually
  *
- * The Apps Script handles reading/writing the Sheet and uploading files to Drive.
- * No OAuth, no Google Cloud Console needed.
+ * Permissions requested:
+ *  - Google Sheets: read/write the CURRENT spreadsheet only
+ *  - Google Drive: create files in a SPECIFIC folder only (no delete, no browse)
  */
 
 const SETTINGS_KEY = 'patch_tracker_settings'
@@ -77,148 +80,141 @@ export async function uploadFileToDrive(webAppUrl, file, patchName) {
 
 /* ── Google Apps Script template ───────────────── */
 
-export const APPS_SCRIPT_CODE = `
-// ========================================
+export const APPS_SCRIPT_CODE = `// ========================================
 // Patch Tracker — Google Apps Script
 // Paste this into Extensions > Apps Script
 // Deploy as Web App (Execute as: Me, Access: Anyone)
 // ========================================
 
 const SHEET_NAME = 'Patches';
-const DRIVE_FOLDER_NAME = 'Patch Tracker Files';
+
+// IMPORTANT: Create a Drive folder for patch files,
+// then paste its ID here from the folder URL:
+// https://drive.google.com/drive/folders/<THIS_IS_THE_ID>
+const DRIVE_FOLDER_ID = '';  // <-- paste your folder ID here
 
 function doGet(e) {
   try {
-    const action = e.parameter.action || 'pull';
-    if (action === 'pull') {
-      return ContentService.createTextOutput(
-        JSON.stringify({ patches: readPatches() })
-      ).setMimeType(ContentService.MimeType.JSON);
-    }
-    return ContentService.createTextOutput(
-      JSON.stringify({ error: 'Unknown action' })
-    ).setMimeType(ContentService.MimeType.JSON);
+    return jsonResponse({ patches: readPatches() });
   } catch (err) {
-    return ContentService.createTextOutput(
-      JSON.stringify({ error: err.message })
-    ).setMimeType(ContentService.MimeType.JSON);
+    return jsonResponse({ error: err.message });
   }
 }
 
 function doPost(e) {
   try {
-    const body = JSON.parse(e.postData.contents);
+    var body = JSON.parse(e.postData.contents);
 
     if (body.action === 'save') {
       writePatches(body.patches);
-      return ContentService.createTextOutput(
-        JSON.stringify({ success: true, count: body.patches.length })
-      ).setMimeType(ContentService.MimeType.JSON);
+      return jsonResponse({ success: true, count: body.patches.length });
     }
 
     if (body.action === 'upload') {
-      const result = uploadFile(body.fileName, body.mimeType, body.base64Data, body.folderName);
-      return ContentService.createTextOutput(
-        JSON.stringify(result)
-      ).setMimeType(ContentService.MimeType.JSON);
+      var result = uploadFile(body.fileName, body.mimeType, body.base64Data, body.folderName);
+      return jsonResponse(result);
     }
 
-    return ContentService.createTextOutput(
-      JSON.stringify({ error: 'Unknown action' })
-    ).setMimeType(ContentService.MimeType.JSON);
+    return jsonResponse({ error: 'Unknown action' });
   } catch (err) {
-    return ContentService.createTextOutput(
-      JSON.stringify({ error: err.message })
-    ).setMimeType(ContentService.MimeType.JSON);
+    return jsonResponse({ error: err.message });
   }
 }
 
+function jsonResponse(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ── Read patches from the sheet ──
 function readPatches() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(SHEET_NAME);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) return [];
 
-  const data = sheet.getDataRange().getValues();
+  var data = sheet.getDataRange().getValues();
   if (data.length <= 1) return [];
 
-  const headers = data[0];
-  const patches = [];
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    const patch = {};
-    headers.forEach((h, idx) => {
-      let val = row[idx];
-      // Parse JSON fields (codeFiles, dbScripts)
-      if ((h === 'codeFiles' || h === 'dbScripts') && typeof val === 'string' && val.startsWith('[')) {
+  var headers = data[0];
+  var patches = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var patch = {};
+    for (var j = 0; j < headers.length; j++) {
+      var val = row[j];
+      // Parse JSON fields
+      if ((headers[j] === 'codeFiles' || headers[j] === 'dbScripts') &&
+          typeof val === 'string' && val.charAt(0) === '[') {
         try { val = JSON.parse(val); } catch(e) { val = []; }
       }
-      patch[h] = val || '';
-    });
+      patch[headers[j]] = val || '';
+    }
     if (patch.id) patches.push(patch);
   }
   return patches;
 }
 
+// ── Write patches to the sheet ──
 function writePatches(patches) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(SHEET_NAME);
-  if (!sheet) {
-    sheet = ss.insertSheet(SHEET_NAME);
-  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
 
-  const headers = [
+  var headers = [
     'id', 'name', 'preparedDate', 'releaseDate',
     'environment', 'testingStatus', 'deploymentStatus',
     'responsiblePerson', 'codeFiles', 'dbScripts'
   ];
 
-  const rows = [headers];
-  patches.forEach(p => {
-    rows.push(headers.map(h => {
-      const val = p[h];
-      if (Array.isArray(val)) return JSON.stringify(val);
-      return val || '';
-    }));
-  });
-
-  sheet.clear();
-  if (rows.length > 0) {
-    sheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
+  var rows = [headers];
+  for (var i = 0; i < patches.length; i++) {
+    var p = patches[i];
+    var row = [];
+    for (var j = 0; j < headers.length; j++) {
+      var val = p[headers[j]];
+      if (Array.isArray(val)) val = JSON.stringify(val);
+      row.push(val || '');
+    }
+    rows.push(row);
   }
 
-  // Format header row
-  const headerRange = sheet.getRange(1, 1, 1, headers.length);
-  headerRange.setFontWeight('bold');
-  headerRange.setBackground('#1b1c1e');
-  headerRange.setFontColor('#4ade80');
+  sheet.clear();
+  sheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
+
+  // Format header
+  var hr = sheet.getRange(1, 1, 1, headers.length);
+  hr.setFontWeight('bold');
+  hr.setBackground('#1b1c1e');
+  hr.setFontColor('#4ade80');
 }
 
+// ── Upload file to Drive (create only, no delete) ──
 function uploadFile(fileName, mimeType, base64Data, folderName) {
-  // Find or create folder
-  const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
-  let rootFolder = folders.hasNext() ? folders.next() : DriveApp.createFolder(DRIVE_FOLDER_NAME);
+  if (!DRIVE_FOLDER_ID) {
+    return { error: 'DRIVE_FOLDER_ID not set in Apps Script. Edit the script and add your folder ID.' };
+  }
+
+  var rootFolder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
 
   // Find or create sub-folder for this patch
-  let subFolder;
-  const subs = rootFolder.getFoldersByName(folderName);
+  var subFolder;
+  var subs = rootFolder.getFoldersByName(folderName);
   if (subs.hasNext()) {
     subFolder = subs.next();
   } else {
     subFolder = rootFolder.createFolder(folderName);
   }
 
-  // Decode and create file
-  const decoded = Utilities.base64Decode(base64Data);
-  const blob = Utilities.newBlob(decoded, mimeType, fileName);
-  const file = subFolder.createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  // Decode and create file (no sharing change — you share manually)
+  var decoded = Utilities.base64Decode(base64Data);
+  var blob = Utilities.newBlob(decoded, mimeType, fileName);
+  var file = subFolder.createFile(blob);
 
   return {
     success: true,
     fileId: file.getId(),
     fileName: file.getName(),
     fileUrl: file.getUrl(),
-    downloadUrl: 'https://drive.google.com/uc?export=download&id=' + file.getId(),
+    downloadUrl: 'https://drive.google.com/uc?export=download&id=' + file.getId()
   };
-}
-`.trim()
+}`
