@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /d/IDEA/NeuTask log --oneline --all)",
+      "Bash(npm run deploy)",
+      "Bash(gh api repos/Gaurav-pasi/NeuTask/pages)",
+      "Bash(npm install xlsx)",
+      "Bash(npm run build)"
+    ]
+  }
+}
