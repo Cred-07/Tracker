@@ -39,22 +39,39 @@ function getApiKey() {
   return s.apiKey || ''
 }
 
-export async function pushPatches(webAppUrl, patches) {
+// Google Apps Script web apps redirect POST (302). Using text/plain avoids
+// CORS preflight. redirect:'follow' ensures the browser follows the redirect.
+async function gasPost(webAppUrl, body) {
   const resp = await fetch(webAppUrl, {
     method: 'POST',
+    redirect: 'follow',
     headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ action: 'save', patches, apiKey: getApiKey() }),
+    body: JSON.stringify({ ...body, apiKey: getApiKey() }),
   })
+  if (!resp.ok) throw new Error(`Request failed: ${resp.status} ${resp.statusText}`)
   const data = await resp.json()
   if (data.error) throw new Error(data.error)
   return data
 }
 
-export async function pullPatches(webAppUrl) {
-  const apiKey = getApiKey()
-  const resp = await fetch(`${webAppUrl}?action=pull&apiKey=${encodeURIComponent(apiKey)}&t=${Date.now()}`)
+async function gasGet(webAppUrl, params = {}) {
+  const url = new URL(webAppUrl)
+  url.searchParams.set('apiKey', getApiKey())
+  url.searchParams.set('t', Date.now())
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
+  const resp = await fetch(url.toString(), { redirect: 'follow' })
+  if (!resp.ok) throw new Error(`Request failed: ${resp.status} ${resp.statusText}`)
   const data = await resp.json()
   if (data.error) throw new Error(data.error)
+  return data
+}
+
+export async function pushPatches(webAppUrl, patches) {
+  return gasPost(webAppUrl, { action: 'save', patches })
+}
+
+export async function pullPatches(webAppUrl) {
+  const data = await gasGet(webAppUrl, { action: 'pull' })
   return data.patches || []
 }
 
@@ -64,20 +81,13 @@ export async function uploadFileToDrive(webAppUrl, file, patchName) {
     reader.onload = async () => {
       try {
         const base64 = reader.result.split(',')[1]
-        const resp = await fetch(webAppUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({
-            action: 'upload',
-            fileName: file.name,
-            mimeType: file.type || 'application/octet-stream',
-            base64Data: base64,
-            folderName: patchName || 'Patch Files',
-            apiKey: getApiKey(),
-          }),
+        const data = await gasPost(webAppUrl, {
+          action: 'upload',
+          fileName: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          base64Data: base64,
+          folderName: patchName || 'Patch Files',
         })
-        const data = await resp.json()
-        if (data.error) throw new Error(data.error)
         resolve(data)
       } catch (err) {
         reject(err)
@@ -89,14 +99,7 @@ export async function uploadFileToDrive(webAppUrl, file, patchName) {
 }
 
 export async function fetchFileFromDrive(webAppUrl, fileId) {
-  const resp = await fetch(webAppUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ action: 'download', fileId, apiKey: getApiKey() }),
-  })
-  const data = await resp.json()
-  if (data.error) throw new Error(data.error)
-  // Convert base64 back to Blob
+  const data = await gasPost(webAppUrl, { action: 'download', fileId })
   const binary = atob(data.base64Data)
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
@@ -280,10 +283,80 @@ function writePatches(patches) {
   sheet.clear();
   sheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
 
+  // Format header row
   var hr = sheet.getRange(1, 1, 1, headers.length);
   hr.setFontWeight('bold');
   hr.setBackground('#1b1c1e');
   hr.setFontColor('#4ade80');
+
+  // Color-code status columns
+  var ENV_COLORS = {
+    'Production': { bg: '#4c1d1d', fg: '#fca5a5' },
+    'Pre-Prod':   { bg: '#4c3a1d', fg: '#fcd34d' },
+    'SIT':        { bg: '#1d4c2a', fg: '#6ee7b7' },
+    'UAT':        { bg: '#3b1d4c', fg: '#c4b5fd' },
+    'Dev':        { bg: '#1d3a4c', fg: '#7dd3fc' }
+  };
+  var TEST_COLORS = {
+    'Passed':      { bg: '#1d4c2a', fg: '#6ee7b7' },
+    'In Progress': { bg: '#4c3a1d', fg: '#fcd34d' },
+    'Failed':      { bg: '#4c1d1d', fg: '#fca5a5' },
+    'Pending':     { bg: '#2a2a2a', fg: '#a3a3a3' }
+  };
+  var DEPLOY_COLORS = {
+    'Deployed':    { bg: '#1d4c2a', fg: '#6ee7b7' },
+    'In Queue':    { bg: '#4c3a1d', fg: '#fcd34d' },
+    'Rolled_Back': { bg: '#4c1d1d', fg: '#fca5a5' },
+    'Scheduled':   { bg: '#1d3a4c', fg: '#7dd3fc' }
+  };
+
+  // Column indices (0-based): environment=4, testingStatus=5, deploymentStatus=6
+  var envCol = headers.indexOf('environment') + 1;
+  var testCol = headers.indexOf('testingStatus') + 1;
+  var deployCol = headers.indexOf('deploymentStatus') + 1;
+
+  for (var r = 0; r < cleanPatches.length; r++) {
+    var p = cleanPatches[r];
+    var row = r + 2; // +1 for header, +1 for 1-based
+
+    if (envCol && p.environment && ENV_COLORS[p.environment]) {
+      var c = ENV_COLORS[p.environment];
+      sheet.getRange(row, envCol).setBackground(c.bg).setFontColor(c.fg).setFontWeight('bold');
+    }
+    if (testCol && p.testingStatus && TEST_COLORS[p.testingStatus]) {
+      var c = TEST_COLORS[p.testingStatus];
+      sheet.getRange(row, testCol).setBackground(c.bg).setFontColor(c.fg).setFontWeight('bold');
+    }
+    if (deployCol && p.deploymentStatus && DEPLOY_COLORS[p.deploymentStatus]) {
+      var c = DEPLOY_COLORS[p.deploymentStatus];
+      sheet.getRange(row, deployCol).setBackground(c.bg).setFontColor(c.fg).setFontWeight('bold');
+    }
+  }
+
+  // Set dark background for all data cells
+  if (cleanPatches.length > 0) {
+    var dataRange = sheet.getRange(2, 1, cleanPatches.length, headers.length);
+    dataRange.setBackground('#1b1c1e');
+    dataRange.setFontColor('#e0e0e0');
+
+    // Re-apply status colors on top (setBackground above overwrites them)
+    for (var r = 0; r < cleanPatches.length; r++) {
+      var p = cleanPatches[r];
+      var row = r + 2;
+      if (envCol && p.environment && ENV_COLORS[p.environment]) {
+        var c = ENV_COLORS[p.environment];
+        sheet.getRange(row, envCol).setBackground(c.bg).setFontColor(c.fg);
+      }
+      if (testCol && p.testingStatus && TEST_COLORS[p.testingStatus]) {
+        var c = TEST_COLORS[p.testingStatus];
+        sheet.getRange(row, testCol).setBackground(c.bg).setFontColor(c.fg);
+      }
+      if (deployCol && p.deploymentStatus && DEPLOY_COLORS[p.deploymentStatus]) {
+        var c = DEPLOY_COLORS[p.deploymentStatus];
+        sheet.getRange(row, deployCol).setBackground(c.bg).setFontColor(c.fg);
+      }
+    }
+  }
 
   return { success: true, count: cleanPatches.length };
 }
