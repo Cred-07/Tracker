@@ -1,37 +1,20 @@
 /**
- * Google Sheets integration for Patch Tracker.
+ * Google Apps Script–based backend for Patch Tracker.
  *
- * Usage flow:
- *  1. User enters their Google OAuth Client ID (from Google Cloud Console)
- *  2. User clicks "Connect" → OAuth popup → token stored in memory
- *  3. Push: writes all patches to a Google Sheet (creates one if needed)
- *  4. Pull: reads patches from the Google Sheet
- *  5. Auto-sync: optionally pushes on every change
+ * Setup (one-time, by any team member):
+ *  1. Create a Google Sheet
+ *  2. Extensions → Apps Script → paste the script from the setup guide
+ *  3. Deploy → Web app → Execute as "Me", access "Anyone"
+ *  4. Copy the Web App URL → paste into Patch Tracker settings
+ *  5. Share the Google Sheet & Drive folder with your team
+ *
+ * The Apps Script handles reading/writing the Sheet and uploading files to Drive.
+ * No OAuth, no Google Cloud Console needed.
  */
 
-const SCOPES = 'https://www.googleapis.com/auth/spreadsheets'
-const DISCOVERY_DOC = 'https://sheets.googleapis.com/$discovery/rest?version=v4'
+const SETTINGS_KEY = 'patch_tracker_settings'
 
-const SETTINGS_KEY = 'patch_tracker_gsheets'
-const SHEET_NAME = 'Patches'
-
-const COLUMNS = [
-  'id', 'name', 'preparedDate', 'releaseDate',
-  'environment', 'testingStatus', 'deploymentStatus',
-  'responsiblePerson', 'filesChanged',
-]
-
-const HEADER_ROW = [
-  'ID', 'Patch Name', 'Prepared Date', 'Release Date',
-  'Environment', 'Testing Status', 'Deployment Status',
-  'Responsible Person', 'Files Changed',
-]
-
-let tokenClient = null
-let gapiInited = false
-let gisInited = false
-
-/* ── persist settings ──────────────────────────── */
+/* ── settings persistence ──────────────────────── */
 
 export function loadSettings() {
   try {
@@ -43,158 +26,199 @@ export function saveSettings(s) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
 }
 
-/* ── init ──────────────────────────────────────── */
+/* ── API calls to Apps Script web app ──────────── */
 
-function waitForGapi() {
-  return new Promise((resolve) => {
-    if (window.gapi) return resolve()
-    const iv = setInterval(() => {
-      if (window.gapi) { clearInterval(iv); resolve() }
-    }, 100)
-    setTimeout(() => { clearInterval(iv); resolve() }, 5000)
+export async function pushPatches(webAppUrl, patches) {
+  const resp = await fetch(webAppUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ action: 'save', patches }),
   })
+  const data = await resp.json()
+  if (data.error) throw new Error(data.error)
+  return data
 }
 
-function waitForGoogle() {
-  return new Promise((resolve) => {
-    if (window.google?.accounts) return resolve()
-    const iv = setInterval(() => {
-      if (window.google?.accounts) { clearInterval(iv); resolve() }
-    }, 100)
-    setTimeout(() => { clearInterval(iv); resolve() }, 5000)
-  })
+export async function pullPatches(webAppUrl) {
+  const resp = await fetch(`${webAppUrl}?action=pull&t=${Date.now()}`)
+  const data = await resp.json()
+  if (data.error) throw new Error(data.error)
+  return data.patches || []
 }
 
-async function initGapi() {
-  if (gapiInited) return
-  await waitForGapi()
-  await new Promise((res, rej) =>
-    window.gapi.load('client', { callback: res, onerror: rej })
-  )
-  await window.gapi.client.init({})
-  await window.gapi.client.load(DISCOVERY_DOC)
-  gapiInited = true
-}
-
-async function initTokenClient(clientId) {
-  if (gisInited) return
-  await waitForGoogle()
-  tokenClient = window.google.accounts.oauth2.initTokenClient({
-    client_id: clientId,
-    scope: SCOPES,
-    callback: () => {}, // replaced at call time
-  })
-  gisInited = true
-}
-
-/* ── auth ──────────────────────────────────────── */
-
-export async function connect(clientId) {
-  await initGapi()
-  await initTokenClient(clientId)
-
+export async function uploadFileToDrive(webAppUrl, file, patchName) {
   return new Promise((resolve, reject) => {
-    tokenClient.callback = (resp) => {
-      if (resp.error) return reject(new Error(resp.error))
-      resolve(resp)
+    const reader = new FileReader()
+    reader.onload = async () => {
+      try {
+        const base64 = reader.result.split(',')[1]
+        const resp = await fetch(webAppUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({
+            action: 'upload',
+            fileName: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            base64Data: base64,
+            folderName: patchName || 'Patch Files',
+          }),
+        })
+        const data = await resp.json()
+        if (data.error) throw new Error(data.error)
+        resolve(data)
+      } catch (err) {
+        reject(err)
+      }
     }
-    tokenClient.error_callback = (err) => reject(new Error(err.message || 'Auth failed'))
-    tokenClient.requestAccessToken({ prompt: 'consent' })
+    reader.onerror = () => reject(new Error('Failed to read file'))
+    reader.readAsDataURL(file)
   })
 }
 
-export function disconnect() {
-  const token = window.gapi?.client?.getToken()
-  if (token) {
-    window.google.accounts.oauth2.revoke(token.access_token)
-    window.gapi.client.setToken(null)
-  }
-  gapiInited = false
-  gisInited = false
-  tokenClient = null
-}
+/* ── Google Apps Script template ───────────────── */
 
-export function isConnected() {
-  return !!window.gapi?.client?.getToken()
-}
+export const APPS_SCRIPT_CODE = `
+// ========================================
+// Patch Tracker — Google Apps Script
+// Paste this into Extensions > Apps Script
+// Deploy as Web App (Execute as: Me, Access: Anyone)
+// ========================================
 
-/* ── spreadsheet ops ───────────────────────────── */
+const SHEET_NAME = 'Patches';
+const DRIVE_FOLDER_NAME = 'Patch Tracker Files';
 
-async function createSpreadsheet(title) {
-  const resp = await window.gapi.client.sheets.spreadsheets.create({
-    resource: {
-      properties: { title },
-      sheets: [{ properties: { title: SHEET_NAME } }],
-    },
-  })
-  return resp.result.spreadsheetId
-}
-
-async function ensureSheet(spreadsheetId) {
+function doGet(e) {
   try {
-    const resp = await window.gapi.client.sheets.spreadsheets.get({ spreadsheetId })
-    const exists = resp.result.sheets.some(s => s.properties.title === SHEET_NAME)
-    if (!exists) {
-      await window.gapi.client.sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        resource: {
-          requests: [{ addSheet: { properties: { title: SHEET_NAME } } }],
-        },
-      })
+    const action = e.parameter.action || 'pull';
+    if (action === 'pull') {
+      return ContentService.createTextOutput(
+        JSON.stringify({ patches: readPatches() })
+      ).setMimeType(ContentService.MimeType.JSON);
     }
-  } catch (e) {
-    throw new Error('Cannot access spreadsheet. Check the ID and permissions.')
+    return ContentService.createTextOutput(
+      JSON.stringify({ error: 'Unknown action' })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ error: err.message })
+    ).setMimeType(ContentService.MimeType.JSON);
   }
 }
 
-/* ── push patches to sheet ─────────────────────── */
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents);
 
-export async function pushToSheet(patches, spreadsheetId) {
-  if (!spreadsheetId) {
-    spreadsheetId = await createSpreadsheet('Patch Tracker')
+    if (body.action === 'save') {
+      writePatches(body.patches);
+      return ContentService.createTextOutput(
+        JSON.stringify({ success: true, count: body.patches.length })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (body.action === 'upload') {
+      const result = uploadFile(body.fileName, body.mimeType, body.base64Data, body.folderName);
+      return ContentService.createTextOutput(
+        JSON.stringify(result)
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    return ContentService.createTextOutput(
+      JSON.stringify({ error: 'Unknown action' })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ error: err.message })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function readPatches() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) return [];
+
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return [];
+
+  const headers = data[0];
+  const patches = [];
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const patch = {};
+    headers.forEach((h, idx) => {
+      let val = row[idx];
+      // Parse JSON fields (codeFiles, dbScripts)
+      if ((h === 'codeFiles' || h === 'dbScripts') && typeof val === 'string' && val.startsWith('[')) {
+        try { val = JSON.parse(val); } catch(e) { val = []; }
+      }
+      patch[h] = val || '';
+    });
+    if (patch.id) patches.push(patch);
+  }
+  return patches;
+}
+
+function writePatches(patches) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_NAME);
+  }
+
+  const headers = [
+    'id', 'name', 'preparedDate', 'releaseDate',
+    'environment', 'testingStatus', 'deploymentStatus',
+    'responsiblePerson', 'codeFiles', 'dbScripts'
+  ];
+
+  const rows = [headers];
+  patches.forEach(p => {
+    rows.push(headers.map(h => {
+      const val = p[h];
+      if (Array.isArray(val)) return JSON.stringify(val);
+      return val || '';
+    }));
+  });
+
+  sheet.clear();
+  if (rows.length > 0) {
+    sheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
+  }
+
+  // Format header row
+  const headerRange = sheet.getRange(1, 1, 1, headers.length);
+  headerRange.setFontWeight('bold');
+  headerRange.setBackground('#1b1c1e');
+  headerRange.setFontColor('#4ade80');
+}
+
+function uploadFile(fileName, mimeType, base64Data, folderName) {
+  // Find or create folder
+  const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
+  let rootFolder = folders.hasNext() ? folders.next() : DriveApp.createFolder(DRIVE_FOLDER_NAME);
+
+  // Find or create sub-folder for this patch
+  let subFolder;
+  const subs = rootFolder.getFoldersByName(folderName);
+  if (subs.hasNext()) {
+    subFolder = subs.next();
   } else {
-    await ensureSheet(spreadsheetId)
+    subFolder = rootFolder.createFolder(folderName);
   }
 
-  const rows = [HEADER_ROW]
-  for (const p of patches) {
-    rows.push(COLUMNS.map(c => p[c] || ''))
-  }
+  // Decode and create file
+  const decoded = Utilities.base64Decode(base64Data);
+  const blob = Utilities.newBlob(decoded, mimeType, fileName);
+  const file = subFolder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
-  // Clear existing data then write
-  await window.gapi.client.sheets.spreadsheets.values.clear({
-    spreadsheetId,
-    range: `${SHEET_NAME}!A:I`,
-  })
-
-  await window.gapi.client.sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `${SHEET_NAME}!A1`,
-    valueInputOption: 'RAW',
-    resource: { values: rows },
-  })
-
-  return spreadsheetId
+  return {
+    success: true,
+    fileId: file.getId(),
+    fileName: file.getName(),
+    fileUrl: file.getUrl(),
+    downloadUrl: 'https://drive.google.com/uc?export=download&id=' + file.getId(),
+  };
 }
-
-/* ── pull patches from sheet ───────────────────── */
-
-export async function pullFromSheet(spreadsheetId) {
-  await ensureSheet(spreadsheetId)
-
-  const resp = await window.gapi.client.sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${SHEET_NAME}!A:I`,
-  })
-
-  const rows = resp.result.values || []
-  if (rows.length <= 1) return [] // only header or empty
-
-  // Skip header row
-  return rows.slice(1).map(row => {
-    const obj = {}
-    COLUMNS.forEach((col, i) => { obj[col] = row[i] || '' })
-    if (!obj.id) obj.id = `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-    return obj
-  })
-}
+`.trim()
