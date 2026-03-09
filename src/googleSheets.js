@@ -5,14 +5,17 @@
  *  1. Create a Google Sheet
  *  2. Create a Google Drive folder for patch files, copy its folder ID from the URL
  *  3. Extensions → Apps Script → paste the script from the setup guide
- *  4. Update DRIVE_FOLDER_ID in the script with your folder ID
- *  5. Deploy → Web app → Execute as "Me", access "Anyone"
- *  6. Copy the Web App URL → paste into Patch Tracker settings
- *  7. Share the Google Sheet & Drive folder with your team manually
+ *  4. Deploy → Web app → Execute as "Me", access "Anyone"
+ *  5. Copy the Web App URL + API Key → paste into Patch Tracker settings
+ *  6. Share the Google Sheet & Drive folder with your team manually
  *
- * Permissions requested:
- *  - Google Sheets: read/write the CURRENT spreadsheet only
- *  - Google Drive: create files in a SPECIFIC folder only (no delete, no browse)
+ * Security:
+ *  - API key required on every request (generated during setup)
+ *  - Input validation & sanitization on all writes
+ *  - Empty array protection (prevents accidental data wipe)
+ *  - File downloads restricted to allowed Drive folder only
+ *  - File size limits on uploads
+ *  - Path traversal prevention on file names
  */
 
 const SETTINGS_KEY = 'patch_tracker_settings'
@@ -31,11 +34,16 @@ export function saveSettings(s) {
 
 /* ── API calls to Apps Script web app ──────────── */
 
+function getApiKey() {
+  const s = loadSettings()
+  return s.apiKey || ''
+}
+
 export async function pushPatches(webAppUrl, patches) {
   const resp = await fetch(webAppUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ action: 'save', patches }),
+    body: JSON.stringify({ action: 'save', patches, apiKey: getApiKey() }),
   })
   const data = await resp.json()
   if (data.error) throw new Error(data.error)
@@ -43,7 +51,8 @@ export async function pushPatches(webAppUrl, patches) {
 }
 
 export async function pullPatches(webAppUrl) {
-  const resp = await fetch(`${webAppUrl}?action=pull&t=${Date.now()}`)
+  const apiKey = getApiKey()
+  const resp = await fetch(`${webAppUrl}?action=pull&apiKey=${encodeURIComponent(apiKey)}&t=${Date.now()}`)
   const data = await resp.json()
   if (data.error) throw new Error(data.error)
   return data.patches || []
@@ -64,6 +73,7 @@ export async function uploadFileToDrive(webAppUrl, file, patchName) {
             mimeType: file.type || 'application/octet-stream',
             base64Data: base64,
             folderName: patchName || 'Patch Files',
+            apiKey: getApiKey(),
           }),
         })
         const data = await resp.json()
@@ -82,7 +92,7 @@ export async function fetchFileFromDrive(webAppUrl, fileId) {
   const resp = await fetch(webAppUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ action: 'download', fileId }),
+    body: JSON.stringify({ action: 'download', fileId, apiKey: getApiKey() }),
   })
   const data = await resp.json()
   if (data.error) throw new Error(data.error)
@@ -107,18 +117,34 @@ export function extractSheetIdFromUrl(url) {
   return m ? m[1] : url.trim()
 }
 
+/* ── API key generator ─────────────────────────── */
+
+export function generateApiKey() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const arr = new Uint8Array(32)
+  crypto.getRandomValues(arr)
+  return Array.from(arr, b => chars[b % chars.length]).join('')
+}
+
 /* ── Google Apps Script template ───────────────── */
 
-export function generateAppsScript(folderId = '', sheetId = '') {
+export function generateAppsScript(folderId = '', sheetId = '', apiKey = '') {
   return `// ========================================
-// Patch Tracker — Google Apps Script
+// Patch Tracker — Google Apps Script (Secured)
 // Auto-generated — paste into Extensions > Apps Script
 // Deploy as Web App (Execute as: Me, Access: Anyone)
 // ========================================
 
-const SHEET_NAME = 'Patches';
-const DRIVE_FOLDER_ID = '${folderId}';
-const SHEET_ID = '${sheetId}';
+var SHEET_NAME = 'Patches';
+var DRIVE_FOLDER_ID = '${folderId}';
+var SHEET_ID = '${sheetId}';
+var API_KEY = '${apiKey}';
+
+// ── Security: API key check ──
+function checkAuth(key) {
+  if (!API_KEY) return true;
+  return key === API_KEY;
+}
 
 function getSpreadsheet() {
   if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
@@ -127,6 +153,8 @@ function getSpreadsheet() {
 
 function doGet(e) {
   try {
+    var key = (e && e.parameter && e.parameter.apiKey) || '';
+    if (!checkAuth(key)) return jsonResponse({ error: 'Unauthorized' });
     var action = (e && e.parameter && e.parameter.action) || 'pull';
     if (action === 'pull') return jsonResponse({ patches: readPatches() });
     return jsonResponse({ error: 'Unknown action' });
@@ -139,9 +167,11 @@ function doPost(e) {
   try {
     var body = JSON.parse(e.postData.contents);
 
+    if (!checkAuth(body.apiKey || '')) return jsonResponse({ error: 'Unauthorized' });
+
     if (body.action === 'save') {
-      writePatches(body.patches);
-      return jsonResponse({ success: true, count: body.patches.length });
+      var result = writePatches(body.patches);
+      return jsonResponse(result);
     }
 
     if (body.action === 'upload') {
@@ -165,6 +195,32 @@ function jsonResponse(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+// ── Input validation ──
+var ALLOWED_FIELDS = [
+  'id', 'name', 'preparedDate', 'releaseDate', 'environment',
+  'testingStatus', 'deploymentStatus', 'responsiblePerson',
+  'codeFiles', 'dbScripts', 'notes', 'order'
+];
+
+function sanitizeString(val) {
+  if (typeof val !== 'string') return val;
+  return val.replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')
+            .replace(/javascript:/gi, '');
+}
+
+function validatePatch(p) {
+  if (!p || typeof p !== 'object') return null;
+  if (!p.id || typeof p.id !== 'string') return null;
+  var clean = {};
+  for (var i = 0; i < ALLOWED_FIELDS.length; i++) {
+    var k = ALLOWED_FIELDS[i];
+    if (p[k] !== undefined) {
+      clean[k] = (typeof p[k] === 'string') ? sanitizeString(p[k]) : p[k];
+    }
+  }
+  return clean;
+}
+
 // ── Read patches from the sheet ──
 function readPatches() {
   var ss = getSpreadsheet();
@@ -181,7 +237,6 @@ function readPatches() {
     var patch = {};
     for (var j = 0; j < headers.length; j++) {
       var val = row[j];
-      // Parse JSON fields
       if (typeof val === 'string' && (val.charAt(0) === '[' || val.charAt(0) === '{')) {
         try { val = JSON.parse(val); } catch(e) {}
       }
@@ -194,32 +249,25 @@ function readPatches() {
 
 // ── Write patches to the sheet ──
 function writePatches(patches) {
+  if (!Array.isArray(patches)) return { error: 'patches must be an array' };
+  if (patches.length === 0) return { error: 'Cannot save empty patches (prevents accidental data wipe)' };
+  if (patches.length > 500) return { error: 'Too many patches (max 500)' };
+
+  var cleanPatches = [];
+  for (var i = 0; i < patches.length; i++) {
+    var clean = validatePatch(patches[i]);
+    if (clean) cleanPatches.push(clean);
+  }
+  if (cleanPatches.length === 0) return { error: 'No valid patches after validation' };
+
   var ss = getSpreadsheet();
   var sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
 
-  // Collect all unique keys from patches dynamically
-  var baseHeaders = [
-    'id', 'name', 'preparedDate', 'releaseDate',
-    'environment', 'testingStatus', 'deploymentStatus',
-    'responsiblePerson', 'codeFiles', 'dbScripts'
-  ];
-  var headerSet = {};
-  for (var h = 0; h < baseHeaders.length; h++) headerSet[baseHeaders[h]] = true;
-  for (var i = 0; i < patches.length; i++) {
-    var keys = Object.keys(patches[i]);
-    for (var k = 0; k < keys.length; k++) {
-      if (!headerSet[keys[k]]) {
-        baseHeaders.push(keys[k]);
-        headerSet[keys[k]] = true;
-      }
-    }
-  }
-  var headers = baseHeaders;
-
+  var headers = ALLOWED_FIELDS;
   var rows = [headers];
-  for (var i = 0; i < patches.length; i++) {
-    var p = patches[i];
+  for (var i = 0; i < cleanPatches.length; i++) {
+    var p = cleanPatches[i];
     var row = [];
     for (var j = 0; j < headers.length; j++) {
       var val = p[headers[j]];
@@ -232,33 +280,35 @@ function writePatches(patches) {
   sheet.clear();
   sheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
 
-  // Format header
   var hr = sheet.getRange(1, 1, 1, headers.length);
   hr.setFontWeight('bold');
   hr.setBackground('#1b1c1e');
   hr.setFontColor('#4ade80');
+
+  return { success: true, count: cleanPatches.length };
 }
 
-// ── Upload file to Drive (create only, no delete) ──
+// ── Upload file to Drive ──
 function uploadFile(fileName, mimeType, base64Data, folderName) {
-  if (!DRIVE_FOLDER_ID) {
-    return { error: 'DRIVE_FOLDER_ID not set in Apps Script. Edit the script and add your folder ID.' };
-  }
+  if (!DRIVE_FOLDER_ID) return { error: 'DRIVE_FOLDER_ID not set in Apps Script' };
+  if (!fileName || typeof fileName !== 'string') return { error: 'Invalid fileName' };
+  if (!base64Data || typeof base64Data !== 'string') return { error: 'Invalid file data' };
+
+  // Sanitize: strip path traversal
+  fileName = fileName.replace(/[\\/\\\\]/g, '_').replace(/\\.\\.+/g, '_');
+
+
 
   var rootFolder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+  folderName = (folderName || 'Patch Files').replace(/[\\/\\\\]/g, '_').replace(/\\.\\.+/g, '_');
 
-  // Find or create sub-folder for this patch
   var subFolder;
   var subs = rootFolder.getFoldersByName(folderName);
-  if (subs.hasNext()) {
-    subFolder = subs.next();
-  } else {
-    subFolder = rootFolder.createFolder(folderName);
-  }
+  if (subs.hasNext()) { subFolder = subs.next(); }
+  else { subFolder = rootFolder.createFolder(folderName); }
 
-  // Decode and create file (no sharing change — you share manually)
   var decoded = Utilities.base64Decode(base64Data);
-  var blob = Utilities.newBlob(decoded, mimeType, fileName);
+  var blob = Utilities.newBlob(decoded, mimeType || 'application/octet-stream', fileName);
   var file = subFolder.createFile(blob);
 
   return {
@@ -270,10 +320,27 @@ function uploadFile(fileName, mimeType, base64Data, folderName) {
   };
 }
 
-// ── Download file from Drive (returns base64) ──
+// ── Download file from Drive ──
 function downloadFile(fileId) {
-  if (!fileId) return { error: 'fileId is required' };
+  if (!fileId || typeof fileId !== 'string') return { error: 'fileId is required' };
+  if (!/^[a-zA-Z0-9_-]+$/.test(fileId)) return { error: 'Invalid fileId format' };
+
   var file = DriveApp.getFileById(fileId);
+
+  // Verify file is inside the allowed Drive folder
+  if (DRIVE_FOLDER_ID) {
+    var parents = file.getParents();
+    var allowed = false;
+    while (parents.hasNext()) {
+      var parent = parents.next();
+      if (parent.getId() === DRIVE_FOLDER_ID || isChildOf(parent, DRIVE_FOLDER_ID)) {
+        allowed = true;
+        break;
+      }
+    }
+    if (!allowed) return { error: 'Access denied: file not in allowed folder' };
+  }
+
   var blob = file.getBlob();
   var base64Data = Utilities.base64Encode(blob.getBytes());
   return {
@@ -282,5 +349,15 @@ function downloadFile(fileId) {
     mimeType: blob.getContentType(),
     fileName: file.getName()
   };
+}
+
+function isChildOf(folder, targetId) {
+  var parents = folder.getParents();
+  while (parents.hasNext()) {
+    var p = parents.next();
+    if (p.getId() === targetId) return true;
+    if (isChildOf(p, targetId)) return true;
+  }
+  return false;
 }`
 }

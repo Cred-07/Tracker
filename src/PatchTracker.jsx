@@ -10,7 +10,7 @@ import * as XLSX from 'xlsx'
 import JSZip from 'jszip'
 import {
   loadSettings, saveSettings, pushPatches, pullPatches,
-  uploadFileToDrive, fetchFileFromDrive, generateAppsScript, extractFolderIdFromUrl, extractSheetIdFromUrl
+  uploadFileToDrive, fetchFileFromDrive, generateAppsScript, extractFolderIdFromUrl, extractSheetIdFromUrl, generateApiKey
 } from './googleSheets'
 import ZipBrowser from './ZipBrowser'
 import CrossEnvVerifier from './CrossEnvVerifier'
@@ -586,11 +586,14 @@ function FilterDropdown({ filters, setFilters }) {
 function SetupGuide({ copied, onCopy }) {
   const [folderUrl, setFolderUrl] = useState('')
   const [sheetUrl, setSheetUrl] = useState('')
+  const [apiKey, setApiKey] = useState(() => generateApiKey())
   const [scriptGenerated, setScriptGenerated] = useState(false)
+  const [keyCopied, setKeyCopied] = useState(false)
 
   const folderId = folderUrl ? extractFolderIdFromUrl(folderUrl) : ''
   const sheetId = sheetUrl ? extractSheetIdFromUrl(sheetUrl) : ''
-  const generatedScript = generateAppsScript(folderId, sheetId)
+  const ready = folderId && sheetId && apiKey
+  const generatedScript = generateAppsScript(folderId, sheetId, apiKey)
 
   const handleCopyGenerated = () => {
     navigator.clipboard.writeText(generatedScript)
@@ -598,11 +601,18 @@ function SetupGuide({ copied, onCopy }) {
     setTimeout(() => setScriptGenerated(false), 2000)
   }
 
+  const handleCopyApiKey = () => {
+    navigator.clipboard.writeText(apiKey)
+    setKeyCopied(true)
+    setTimeout(() => setKeyCopied(false), 2000)
+  }
+
   return (
     <div className="space-y-4">
       {/* Step 1: Paste URLs */}
       <div className="neu-pressed p-4 space-y-3">
         <p className="font-semibold text-neu-accent text-xs">Step 1 — Paste your Google Sheet &amp; Drive folder URLs</p>
+        <label className="block text-[10px] uppercase tracking-widest text-neu-muted font-medium">Google Spreadsheet URL</label>
         <input value={sheetUrl} onChange={e => setSheetUrl(e.target.value)}
                placeholder="https://docs.google.com/spreadsheets/d/..."
                className="w-full pt-input text-xs font-mono" />
@@ -612,6 +622,7 @@ function SetupGuide({ copied, onCopy }) {
             <span className="text-emerald-300">Sheet ID extracted: <code className="text-neu-accent bg-neu-dark px-1 py-0.5 rounded">{sheetId.slice(0, 20)}...</code></span>
           </div>
         )}
+        <label className="block text-[10px] uppercase tracking-widest text-neu-muted font-medium mt-2">Google Drive Folder URL</label>
         <input value={folderUrl} onChange={e => setFolderUrl(e.target.value)}
                placeholder="https://drive.google.com/drive/folders/..."
                className="w-full pt-input text-xs font-mono" />
@@ -623,17 +634,38 @@ function SetupGuide({ copied, onCopy }) {
         )}
       </div>
 
-      {/* Step 2: Copy generated script */}
+      {/* Step 2: API Key */}
       <div className="neu-pressed p-4 space-y-3">
-        <p className="font-semibold text-neu-accent text-xs">Step 2 — Copy the auto-generated script</p>
+        <p className="font-semibold text-neu-accent text-xs">Step 2 — API Key (auto-generated)</p>
         <p className="text-[10px] text-neu-muted">
-          {folderId && sheetId
-            ? 'Script is ready with your Sheet ID and folder ID pre-filled. Copy it below.'
+          This key secures your web app. Save it in the <strong className="text-neu-text">Connect</strong> tab after deploying.
+        </p>
+        <div className="flex items-center gap-2">
+          <input value={apiKey} readOnly className="flex-1 pt-input text-xs font-mono bg-neu-dark" />
+          <button onClick={handleCopyApiKey}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all shrink-0"
+                  style={{ boxShadow: '2px 2px 6px #111213, -2px -2px 6px #2e3035' }}>
+            {keyCopied ? <><Check size={11} className="text-emerald-400" /> Copied!</>
+                       : <><Copy size={11} className="text-neu-muted" /> Copy Key</>}
+          </button>
+          <button onClick={() => setApiKey(generateApiKey())}
+                  className="p-1.5 rounded-lg hover:bg-neu-light transition-colors shrink-0" title="Regenerate key">
+            <RefreshCw size={12} className="text-neu-muted" />
+          </button>
+        </div>
+      </div>
+
+      {/* Step 3: Copy generated script */}
+      <div className="neu-pressed p-4 space-y-3">
+        <p className="font-semibold text-neu-accent text-xs">Step 3 — Copy the auto-generated script</p>
+        <p className="text-[10px] text-neu-muted">
+          {ready
+            ? 'Script is ready with your IDs and API key pre-filled. Copy it below.'
             : 'Paste your Sheet URL and folder URL above first to generate the script.'}
         </p>
         <div className="flex items-center justify-between">
           <span className="text-[10px] uppercase tracking-widest text-neu-muted font-medium">Apps Script Code</span>
-          <button onClick={handleCopyGenerated} disabled={!folderId || !sheetId}
+          <button onClick={handleCopyGenerated} disabled={!ready}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all disabled:opacity-30"
                   style={{ boxShadow: '2px 2px 6px #111213, -2px -2px 6px #2e3035' }}>
             {scriptGenerated ? <><Check size={11} className="text-emerald-400" /> Copied!</>
@@ -645,9 +677,9 @@ function SetupGuide({ copied, onCopy }) {
         </pre>
       </div>
 
-      {/* Step 3: Deploy instructions */}
+      {/* Step 4: Deploy instructions */}
       <div className="neu-pressed p-4 space-y-3 text-xs">
-        <p className="font-semibold text-neu-accent">Step 3 — Deploy in Google Sheets</p>
+        <p className="font-semibold text-neu-accent">Step 4 — Deploy in Google Sheets</p>
         <ol className="list-decimal list-inside space-y-1.5 text-neu-muted text-[11px]">
           <li>Open your Google Spreadsheet</li>
           <li>Go to <strong className="text-neu-text">Extensions → Apps Script</strong></li>
@@ -655,14 +687,14 @@ function SetupGuide({ copied, onCopy }) {
           <li>Click <strong className="text-neu-text">Deploy → New deployment</strong></li>
           <li>Type: <strong className="text-neu-text">Web app</strong> — Execute as: <strong className="text-neu-text">Me</strong> — Access: <strong className="text-neu-text">Anyone</strong></li>
           <li>Click Deploy, authorize when prompted</li>
-          <li><strong className="text-neu-text">Copy the Web App URL</strong> → go to Connect tab → paste it</li>
+          <li><strong className="text-neu-text">Copy the Web App URL</strong> → go to Connect tab → paste URL + API Key</li>
         </ol>
       </div>
 
       <div className="neu-pressed-sm p-3 flex items-start gap-2">
-        <AlertCircle size={14} className="text-amber-400 shrink-0 mt-0.5" />
+        <Shield size={14} className="text-emerald-400 shrink-0 mt-0.5" />
         <p className="text-[10px] text-neu-muted">
-          <strong className="text-amber-300">No Google Cloud Console needed.</strong> The script only accesses the current spreadsheet and creates files in your specified folder. No delete access. You share the Sheet & folder with your team manually.
+          <strong className="text-emerald-300">Security:</strong> API key required on every request. Empty saves blocked (prevents data wipe). File downloads restricted to your folder. Input validated and sanitized. No delete access.
         </p>
       </div>
     </div>
@@ -746,6 +778,18 @@ function SetupModal({ onClose, patches, setPatches }) {
                      className="w-full pt-input text-xs font-mono" />
               <p className="text-[9px] text-neu-muted mt-1">
                 Get this from Apps Script → Deploy → Web app → URL
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-[10px] uppercase tracking-widest text-neu-muted font-medium mb-1.5">
+                API Key
+              </label>
+              <input value={settings.apiKey || ''} onChange={e => set('apiKey', e.target.value)}
+                     placeholder="Paste API key from Setup Guide"
+                     className="w-full pt-input text-xs font-mono" type="password" />
+              <p className="text-[9px] text-neu-muted mt-1">
+                Generated in Setup Guide — required for all requests
               </p>
             </div>
 
@@ -998,7 +1042,6 @@ export default function PatchTracker() {
     setEditPatch(null)
   }, [])
 
-  const handleDelete = useCallback(id => setPatches(prev => prev.filter(p => p.id !== id)), [])
   const handleEdit = useCallback(patch => { setEditPatch(patch); setShowModal(true) }, [])
 
   const filteredPatches = useMemo(() => {
@@ -1192,10 +1235,6 @@ export default function PatchTracker() {
                       <button onClick={() => handleEdit(patch)}
                               className="p-1.5 rounded-lg hover:bg-neu-light transition-colors" title="Edit">
                         <Edit3 size={12} className="text-neu-muted" />
-                      </button>
-                      <button onClick={() => handleDelete(patch.id)}
-                              className="p-1.5 rounded-lg hover:bg-rose-500/15 transition-colors" title="Delete">
-                        <Trash2 size={12} className="text-rose-400/60" />
                       </button>
                     </div>
                   </td>
