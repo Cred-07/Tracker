@@ -350,7 +350,7 @@ export default function ChangePropagator({ patches, onClose }) {
             Select the source patches (e.g., UAT) whose changes you want to propagate to other environments.
           </p>
 
-          {selected.length > 0 && (
+          {sourceSelected.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-4">
               {sourceSelected.map((id, idx) => {
                 const p = patches.find(x => x.id === id)
