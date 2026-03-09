@@ -78,20 +78,31 @@ export async function uploadFileToDrive(webAppUrl, file, patchName) {
   })
 }
 
+/* ── URL parsers ───────────────────────────────── */
+
+export function extractFolderIdFromUrl(url) {
+  // https://drive.google.com/drive/folders/FOLDER_ID or just the ID
+  const m = url.match(/folders\/([a-zA-Z0-9_-]+)/)
+  return m ? m[1] : url.trim()
+}
+
+export function extractSheetIdFromUrl(url) {
+  // https://docs.google.com/spreadsheets/d/SHEET_ID/... or just the ID
+  const m = url.match(/spreadsheets\/d\/([a-zA-Z0-9_-]+)/)
+  return m ? m[1] : url.trim()
+}
+
 /* ── Google Apps Script template ───────────────── */
 
-export const APPS_SCRIPT_CODE = `// ========================================
+export function generateAppsScript(folderId = '') {
+  return `// ========================================
 // Patch Tracker — Google Apps Script
-// Paste this into Extensions > Apps Script
+// Auto-generated — paste into Extensions > Apps Script
 // Deploy as Web App (Execute as: Me, Access: Anyone)
 // ========================================
 
 const SHEET_NAME = 'Patches';
-
-// IMPORTANT: Create a Drive folder for patch files,
-// then paste its ID here from the folder URL:
-// https://drive.google.com/drive/folders/<THIS_IS_THE_ID>
-const DRIVE_FOLDER_ID = '';  // <-- paste your folder ID here
+const DRIVE_FOLDER_ID = '${folderId}';
 
 function doGet(e) {
   try {
@@ -218,3 +229,4 @@ function uploadFile(fileName, mimeType, base64Data, folderName) {
     downloadUrl: 'https://drive.google.com/uc?export=download&id=' + file.getId()
   };
 }`
+}

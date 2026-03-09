@@ -9,7 +9,7 @@ import {
 import * as XLSX from 'xlsx'
 import {
   loadSettings, saveSettings, pushPatches, pullPatches,
-  uploadFileToDrive, APPS_SCRIPT_CODE
+  uploadFileToDrive, generateAppsScript, extractFolderIdFromUrl, extractSheetIdFromUrl
 } from './googleSheets'
 
 /* ── helpers ───────────────────────────────────── */
@@ -449,11 +449,85 @@ function FilterDropdown({ filters, setFilters }) {
 
 /* ── setup / settings modal ────────────────────── */
 
+function SetupGuide({ copied, onCopy }) {
+  const [folderUrl, setFolderUrl] = useState('')
+  const [scriptGenerated, setScriptGenerated] = useState(false)
+
+  const folderId = folderUrl ? extractFolderIdFromUrl(folderUrl) : ''
+  const generatedScript = generateAppsScript(folderId)
+
+  const handleCopyGenerated = () => {
+    navigator.clipboard.writeText(generatedScript)
+    setScriptGenerated(true)
+    setTimeout(() => setScriptGenerated(false), 2000)
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Step 1: Paste URLs */}
+      <div className="neu-pressed p-4 space-y-3">
+        <p className="font-semibold text-neu-accent text-xs">Step 1 — Paste your Google Drive folder URL</p>
+        <input value={folderUrl} onChange={e => setFolderUrl(e.target.value)}
+               placeholder="https://drive.google.com/drive/folders/..."
+               className="w-full pt-input text-xs font-mono" />
+        {folderId && (
+          <div className="flex items-center gap-2 text-[10px]">
+            <Check size={11} className="text-emerald-400" />
+            <span className="text-emerald-300">Folder ID extracted: <code className="text-neu-accent bg-neu-dark px-1 py-0.5 rounded">{folderId.slice(0, 20)}...</code></span>
+          </div>
+        )}
+      </div>
+
+      {/* Step 2: Copy generated script */}
+      <div className="neu-pressed p-4 space-y-3">
+        <p className="font-semibold text-neu-accent text-xs">Step 2 — Copy the auto-generated script</p>
+        <p className="text-[10px] text-neu-muted">
+          {folderId
+            ? 'Script is ready with your folder ID pre-filled. Copy it below.'
+            : 'Paste your folder URL above first to generate the script with your folder ID.'}
+        </p>
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] uppercase tracking-widest text-neu-muted font-medium">Apps Script Code</span>
+          <button onClick={handleCopyGenerated} disabled={!folderId}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all disabled:opacity-30"
+                  style={{ boxShadow: '2px 2px 6px #111213, -2px -2px 6px #2e3035' }}>
+            {scriptGenerated ? <><Check size={11} className="text-emerald-400" /> Copied!</>
+                             : <><Copy size={11} className="text-neu-muted" /> Copy Script</>}
+          </button>
+        </div>
+        <pre className="neu-pressed p-3 text-[9px] text-neu-muted font-mono overflow-x-auto max-h-36 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+          {generatedScript}
+        </pre>
+      </div>
+
+      {/* Step 3: Deploy instructions */}
+      <div className="neu-pressed p-4 space-y-3 text-xs">
+        <p className="font-semibold text-neu-accent">Step 3 — Deploy in Google Sheets</p>
+        <ol className="list-decimal list-inside space-y-1.5 text-neu-muted text-[11px]">
+          <li>Open your Google Spreadsheet</li>
+          <li>Go to <strong className="text-neu-text">Extensions → Apps Script</strong></li>
+          <li>Delete any existing code, <strong className="text-neu-text">paste the copied script</strong></li>
+          <li>Click <strong className="text-neu-text">Deploy → New deployment</strong></li>
+          <li>Type: <strong className="text-neu-text">Web app</strong> — Execute as: <strong className="text-neu-text">Me</strong> — Access: <strong className="text-neu-text">Anyone</strong></li>
+          <li>Click Deploy, authorize when prompted</li>
+          <li><strong className="text-neu-text">Copy the Web App URL</strong> → go to Connect tab → paste it</li>
+        </ol>
+      </div>
+
+      <div className="neu-pressed-sm p-3 flex items-start gap-2">
+        <AlertCircle size={14} className="text-amber-400 shrink-0 mt-0.5" />
+        <p className="text-[10px] text-neu-muted">
+          <strong className="text-amber-300">No Google Cloud Console needed.</strong> The script only accesses the current spreadsheet and creates files in your specified folder. No delete access. You share the Sheet & folder with your team manually.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 function SetupModal({ onClose, patches, setPatches }) {
   const [settings, setSettings_] = useState(loadSettings())
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState('')
-  const [copied, setCopied] = useState(false)
   const [tab, setTab] = useState('connect') // 'connect' | 'setup'
 
   const set = (k, v) => setSettings_(prev => ({ ...prev, [k]: v }))
@@ -485,11 +559,7 @@ function SetupModal({ onClose, patches, setPatches }) {
     setLoading('')
   }
 
-  const handleCopyScript = () => {
-    navigator.clipboard.writeText(APPS_SCRIPT_CODE)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-animate"
@@ -570,48 +640,7 @@ function SetupModal({ onClose, patches, setPatches }) {
         )}
 
         {tab === 'setup' && (
-          <div className="space-y-4">
-            <div className="neu-pressed p-4 space-y-3 text-xs text-neu-text">
-              <p className="font-semibold text-neu-accent">One-time setup (3 minutes):</p>
-              <ol className="list-decimal list-inside space-y-2 text-neu-muted">
-                <li>Create a new <strong className="text-neu-text">Google Spreadsheet</strong></li>
-                <li>Create a <strong className="text-neu-text">Google Drive folder</strong> for patch files</li>
-                <li>Copy the folder ID from the URL: <code className="text-[10px] text-neu-accent bg-neu-dark px-1 py-0.5 rounded">drive.google.com/drive/folders/<strong>THIS_IS_THE_ID</strong></code></li>
-                <li>In the Spreadsheet, go to <strong className="text-neu-text">Extensions → Apps Script</strong></li>
-                <li>Delete any existing code and <strong className="text-neu-text">paste the script</strong> below</li>
-                <li>Set <code className="text-[10px] text-neu-accent bg-neu-dark px-1 py-0.5 rounded">DRIVE_FOLDER_ID</code> in the script to your folder ID</li>
-                <li>Click <strong className="text-neu-text">Deploy → New deployment → Web app</strong></li>
-                <li>Execute as: <strong className="text-neu-text">Me</strong> — Access: <strong className="text-neu-text">Anyone</strong></li>
-                <li>Click Deploy, authorize when prompted (only Sheets + Drive create access)</li>
-                <li><strong className="text-neu-text">Copy the Web App URL</strong> → paste in Connect tab</li>
-                <li>Share the Sheet & Drive folder with your team manually (view or edit)</li>
-              </ol>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] uppercase tracking-widest text-neu-muted font-medium">Apps Script Code</span>
-                <button onClick={handleCopyScript}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all"
-                        style={{ boxShadow: '2px 2px 6px #111213, -2px -2px 6px #2e3035' }}>
-                  {copied ? <><Check size={11} className="text-emerald-400" /> Copied!</>
-                           : <><Copy size={11} className="text-neu-muted" /> Copy Script</>}
-                </button>
-              </div>
-              <pre className="neu-pressed p-4 text-[10px] text-neu-muted font-mono overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
-                {APPS_SCRIPT_CODE}
-              </pre>
-            </div>
-
-            <div className="neu-pressed-sm p-3 flex items-start gap-2">
-              <AlertCircle size={14} className="text-amber-400 shrink-0 mt-0.5" />
-              <p className="text-[10px] text-neu-muted">
-                <strong className="text-amber-300">No Google Cloud Console needed!</strong> This uses Google Apps Script (free).
-                The script only gets access to the current spreadsheet and can only create files in the folder you specify — no delete access, no access to your other files.
-                You control sharing manually.
-              </p>
-            </div>
-          </div>
+          <SetupGuide />
         )}
       </div>
     </div>
