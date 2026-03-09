@@ -65,8 +65,8 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
   const oldMonacoRef = useRef(null)
   const newMonacoRef = useRef(null)
   const isSyncing = useRef(false)
-  const oldDecorationsRef = useRef([])
-  const newDecorationsRef = useRef([])
+  const oldDecosCollRef = useRef(null)
+  const newDecosCollRef = useRef(null)
   const locationPaneRef = useRef(null)
 
   const bothReady = editorsReady.old && editorsReady.new
@@ -110,8 +110,17 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
         }
       })
 
-      oldDecorationsRef.current = oldEditor.deltaDecorations(oldDecorationsRef.current, oldDecos)
-      newDecorationsRef.current = newEditor.deltaDecorations(newDecorationsRef.current, newDecos)
+      // Use modern createDecorationsCollection API (deltaDecorations removed in Monaco 0.44+)
+      if (oldDecosCollRef.current) {
+        oldDecosCollRef.current.set(oldDecos)
+      } else {
+        oldDecosCollRef.current = oldEditor.createDecorationsCollection(oldDecos)
+      }
+      if (newDecosCollRef.current) {
+        newDecosCollRef.current.set(newDecos)
+      } else {
+        newDecosCollRef.current = newEditor.createDecorationsCollection(newDecos)
+      }
     }
 
     applyDecorations()

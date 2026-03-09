@@ -434,3 +434,193 @@ function isChildOf(folder, targetId) {
   return false;
 }`
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Task Tracker — Google Sheets integration
+   ═══════════════════════════════════════════════════════════ */
+
+const TASK_SETTINGS_KEY = 'task_tracker_settings'
+
+export function loadTaskSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(TASK_SETTINGS_KEY)) || {}
+  } catch { return {} }
+}
+
+export function saveTaskSettings(s) {
+  localStorage.setItem(TASK_SETTINGS_KEY, JSON.stringify(s))
+}
+
+function getTaskApiKey() {
+  const s = loadTaskSettings()
+  return s.apiKey || ''
+}
+
+async function taskGasPost(webAppUrl, body) {
+  const resp = await fetch(webAppUrl, {
+    method: 'POST',
+    redirect: 'follow',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ ...body, apiKey: getTaskApiKey() }),
+  })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  const data = await resp.json()
+  if (data.error) throw new Error(data.error)
+  return data
+}
+
+async function taskGasGet(webAppUrl, params = {}) {
+  const url = new URL(webAppUrl)
+  url.searchParams.set('apiKey', getTaskApiKey())
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
+  const resp = await fetch(url.toString(), { redirect: 'follow' })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  const data = await resp.json()
+  if (data.error) throw new Error(data.error)
+  return data
+}
+
+export async function pushTasks(webAppUrl, tasks, history) {
+  return taskGasPost(webAppUrl, { action: 'save', tasks, history })
+}
+
+export async function pullTasks(webAppUrl) {
+  return taskGasGet(webAppUrl, { action: 'pull' })
+}
+
+/* ── Apps Script template for Task Tracker ──── */
+
+export function generateTasksAppsScript(sheetId = '', apiKey = '') {
+  return `// ========================================
+// Task Tracker — Google Apps Script
+// Auto-generated — paste into Extensions > Apps Script
+// Deploy as Web App (Execute as: Me, Access: Anyone)
+// ========================================
+
+var SHEET_ID = '${sheetId}';
+var API_KEY = '${apiKey}';
+var TASKS_SHEET = 'Tasks';
+var HISTORY_SHEET = 'History';
+
+function checkAuth(key) {
+  if (!API_KEY) return true;
+  return key === API_KEY;
+}
+
+function getSpreadsheet() {
+  if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
+
+function doGet(e) {
+  try {
+    var key = (e && e.parameter && e.parameter.apiKey) || '';
+    if (!checkAuth(key)) return jsonResponse({ error: 'Unauthorized' });
+    var action = (e && e.parameter && e.parameter.action) || 'pull';
+    if (action === 'pull') {
+      return jsonResponse({ tasks: readSheet(TASKS_SHEET), history: readSheet(HISTORY_SHEET) });
+    }
+    return jsonResponse({ error: 'Unknown action' });
+  } catch (err) {
+    return jsonResponse({ error: err.message });
+  }
+}
+
+function doPost(e) {
+  try {
+    var body = JSON.parse(e.postData.contents);
+    if (!checkAuth(body.apiKey || '')) return jsonResponse({ error: 'Unauthorized' });
+
+    if (body.action === 'save') {
+      var r1 = writeSheet(TASKS_SHEET, body.tasks || [], false);
+      var r2 = writeSheet(HISTORY_SHEET, body.history || [], true);
+      return jsonResponse({ success: true, tasks: r1.count, history: r2.count });
+    }
+    return jsonResponse({ error: 'Unknown action' });
+  } catch (err) {
+    return jsonResponse({ error: err.message });
+  }
+}
+
+function jsonResponse(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function sanitizeString(val) {
+  if (typeof val !== 'string') return val;
+  return val.replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')
+            .replace(/javascript:/gi, '');
+}
+
+function readSheet(sheetName) {
+  var ss = getSpreadsheet();
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return [];
+  var data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return [];
+  var headers = data[0];
+  var items = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var item = {};
+    for (var j = 0; j < headers.length; j++) {
+      var val = row[j];
+      if (typeof val === 'string' && (val.charAt(0) === '[' || val.charAt(0) === '{')) {
+        try { val = JSON.parse(val); } catch(e) {}
+      }
+      item[headers[j]] = (val === 0 || val === false) ? val : (val || '');
+    }
+    if (item.id) items.push(item);
+  }
+  return items;
+}
+
+function writeSheet(sheetName, items, isHistory) {
+  if (!Array.isArray(items)) return { error: 'items must be an array', count: 0 };
+  if (items.length > 1000) return { error: 'Too many items (max 1000)', count: 0 };
+
+  var ss = getSpreadsheet();
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) sheet = ss.insertSheet(sheetName);
+
+  var headers = isHistory
+    ? ['id', 'title', 'subtasks', 'completedAt']
+    : ['id', 'title', 'subtasks'];
+
+  var rows = [headers];
+  for (var i = 0; i < items.length; i++) {
+    var t = items[i];
+    if (!t || !t.id) continue;
+    var row = [];
+    row.push(sanitizeString(t.id || ''));
+    row.push(sanitizeString(t.title || ''));
+    row.push(JSON.stringify(t.subtasks || []));
+    if (isHistory) row.push(t.completedAt || '');
+    rows.push(row);
+  }
+
+  sheet.clear();
+  if (rows.length > 1) {
+    sheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
+  } else {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+
+  // Format header
+  var hr = sheet.getRange(1, 1, 1, headers.length);
+  hr.setFontWeight('bold');
+  hr.setBackground('#1b1c1e');
+  hr.setFontColor('#4ade80');
+
+  // Dark theme for data
+  if (rows.length > 1) {
+    var dataRange = sheet.getRange(2, 1, rows.length - 1, headers.length);
+    dataRange.setBackground('#1b1c1e');
+    dataRange.setFontColor('#e0e0e0');
+  }
+
+  return { success: true, count: rows.length - 1 };
+}
+`
+}

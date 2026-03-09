@@ -1111,7 +1111,7 @@ export default function PatchTracker() {
                 className="neu-raised-sm flex items-center gap-2 px-3 py-2 text-xs font-medium text-neu-muted hover:text-green-400 transition-all hover:shadow-lg ml-2"
               >
                 <LayoutDashboard size={14} />
-                NeuTask
+                Task Tracker
               </a>
             </div>
             <p className="text-xs text-neu-muted mt-1 ml-1">Track deployment patches across environments</p>
