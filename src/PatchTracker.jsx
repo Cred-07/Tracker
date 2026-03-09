@@ -1118,14 +1118,17 @@ export default function PatchTracker() {
           </div>
           <div className="flex items-center gap-2 flex-wrap self-start md:self-auto">
             <DataMenu patches={patches} setPatches={setPatches} onOpenSetup={() => setShowSetup(true)} />
-            <button onClick={() => setShowCrossEnvVerifier(true)} className="pt-btn-outline flex items-center gap-1.5 !text-[11px] !px-3 !py-2">
-              <GitCompare size={12} /> Verify Envs
+            <button onClick={() => setShowCrossEnvVerifier(true)} className="pt-btn-outline flex items-center gap-1.5 !text-[11px] !px-3 !py-2"
+                    title="Compare patches across environments (UAT vs PreProd vs Prod) to verify the same changes exist everywhere">
+              <GitCompare size={12} /> Cross-Env Diff
             </button>
-            <button onClick={() => setShowConsolidator(true)} className="pt-btn-outline flex items-center gap-1.5 !text-[11px] !px-3 !py-2">
-              <Code size={12} /> Consolidate
+            <button onClick={() => setShowConsolidator(true)} className="pt-btn-outline flex items-center gap-1.5 !text-[11px] !px-3 !py-2"
+                    title="Merge multiple sequential patches into one (first patch's old + last patch's new)">
+              <Code size={12} /> Merge Patches
             </button>
-            <button onClick={() => setShowPropagator(true)} className="pt-btn-outline flex items-center gap-1.5 !text-[11px] !px-3 !py-2">
-              <Copy size={12} /> Propagate
+            <button onClick={() => setShowPropagator(true)} className="pt-btn-outline flex items-center gap-1.5 !text-[11px] !px-3 !py-2"
+                    title="Apply UAT patch changes to PreProd/Prod files — consolidates source patches then applies the exact diff to target environments">
+              <Copy size={12} /> Apply to Env
             </button>
             <button onClick={() => { setEditPatch(null); setShowModal(true) }} className="pt-btn flex items-center gap-2">
               <Plus size={16} strokeWidth={2.5} /> New Patch
