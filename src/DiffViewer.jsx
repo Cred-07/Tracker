@@ -1,7 +1,62 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import Editor from '@monaco-editor/react'
-import { X, Maximize2, Minimize2, GitCompare } from 'lucide-react'
+import { X, GitCompare } from 'lucide-react'
 import { computeLineDiff } from './diffUtils'
+
+/**
+ * Build aligned content for WinMerge-style side-by-side diff.
+ * Inserts padding lines so that matching lines appear at the same row.
+ * Returns { leftLines, rightLines, lineMap } where lineMap tracks each row's type.
+ */
+function buildAlignedDiff(oldContent, newContent) {
+  const oldLines = (oldContent || '').split('\n')
+  const newLines = (newContent || '').split('\n')
+
+  if (oldLines.length === 0 && newLines.length === 0) {
+    return { leftText: '', rightText: '', lineMap: [], stats: { added: 0, removed: 0 } }
+  }
+
+  const { oldStatus, newStatus } = computeLineDiff(oldLines, newLines)
+
+  // Walk both arrays in parallel to build aligned rows
+  const rows = [] // { type, leftLine, rightLine, leftNum, rightNum }
+  let oi = 0, ni = 0
+
+  while (oi < oldLines.length || ni < newLines.length) {
+    if (oi < oldLines.length && oldStatus[oi] === 'removed') {
+      // Deleted line — show on left, padding on right
+      rows.push({ type: 'removed', leftLine: oldLines[oi], rightLine: '', leftNum: oi + 1, rightNum: null })
+      oi++
+    } else if (ni < newLines.length && newStatus[ni] === 'added') {
+      // Added line — padding on left, show on right
+      rows.push({ type: 'added', leftLine: '', rightLine: newLines[ni], leftNum: null, rightNum: ni + 1 })
+      ni++
+    } else if (oi < oldLines.length && ni < newLines.length) {
+      // Unchanged — show on both
+      rows.push({ type: 'unchanged', leftLine: oldLines[oi], rightLine: newLines[ni], leftNum: oi + 1, rightNum: ni + 1 })
+      oi++; ni++
+    } else if (oi < oldLines.length) {
+      rows.push({ type: 'removed', leftLine: oldLines[oi], rightLine: '', leftNum: oi + 1, rightNum: null })
+      oi++
+    } else {
+      rows.push({ type: 'added', leftLine: '', rightLine: newLines[ni], leftNum: null, rightNum: ni + 1 })
+      ni++
+    }
+  }
+
+  const leftText = rows.map(r => r.leftLine).join('\n')
+  const rightText = rows.map(r => r.rightLine).join('\n')
+
+  return {
+    leftText,
+    rightText,
+    lineMap: rows,
+    stats: {
+      added: rows.filter(r => r.type === 'added').length,
+      removed: rows.filter(r => r.type === 'removed').length,
+    }
+  }
+}
 
 export default function DiffViewer({ oldContent, newContent, fileName, onClose }) {
   const [editorsReady, setEditorsReady] = useState({ old: false, new: false })
@@ -12,15 +67,12 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
   const isSyncing = useRef(false)
   const oldDecorationsRef = useRef([])
   const newDecorationsRef = useRef([])
+  const locationPaneRef = useRef(null)
 
   const bothReady = editorsReady.old && editorsReady.new
 
-  // Compute diff decorations
-  const diffResult = useMemo(() => {
-    const oldLines = (oldContent || '').split('\n')
-    const newLines = (newContent || '').split('\n')
-    return computeLineDiff(oldLines, newLines)
-  }, [oldContent, newContent])
+  // Build aligned diff content
+  const aligned = useMemo(() => buildAlignedDiff(oldContent, newContent), [oldContent, newContent])
 
   // Apply decorations when editors are ready
   useEffect(() => {
@@ -29,40 +81,43 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
     const applyDecorations = () => {
       const oldEditor = oldEditorRef.current
       const newEditor = newEditorRef.current
-      if (!oldEditor || !newEditor) return
+      const monaco = oldMonacoRef.current
+      if (!oldEditor || !newEditor || !monaco) return
 
-      // Old editor: highlight removed lines in red
-      oldDecorationsRef.current = oldEditor.deltaDecorations(
-        oldDecorationsRef.current,
-        diffResult.oldDecorations.map(d => ({
-          range: new oldMonacoRef.current.Range(d.line, 1, d.line, 1),
-          options: {
-            isWholeLine: true,
-            className: 'diff-line-removed',
-            glyphMarginClassName: 'diff-glyph-removed',
-          }
-        }))
-      )
+      const oldDecos = []
+      const newDecos = []
 
-      // New editor: highlight added lines in green
-      newDecorationsRef.current = newEditor.deltaDecorations(
-        newDecorationsRef.current,
-        diffResult.newDecorations.map(d => ({
-          range: new newMonacoRef.current.Range(d.line, 1, d.line, 1),
-          options: {
-            isWholeLine: true,
-            className: 'diff-line-added',
-            glyphMarginClassName: 'diff-glyph-added',
-          }
-        }))
-      )
+      aligned.lineMap.forEach((row, i) => {
+        const line = i + 1
+        if (row.type === 'removed') {
+          oldDecos.push({
+            range: new monaco.Range(line, 1, line, 1),
+            options: { isWholeLine: true, className: 'diff-line-removed', glyphMarginClassName: 'diff-glyph-removed' }
+          })
+          newDecos.push({
+            range: new monaco.Range(line, 1, line, 1),
+            options: { isWholeLine: true, className: 'diff-line-padding' }
+          })
+        } else if (row.type === 'added') {
+          oldDecos.push({
+            range: new monaco.Range(line, 1, line, 1),
+            options: { isWholeLine: true, className: 'diff-line-padding' }
+          })
+          newDecos.push({
+            range: new monaco.Range(line, 1, line, 1),
+            options: { isWholeLine: true, className: 'diff-line-added', glyphMarginClassName: 'diff-glyph-added' }
+          })
+        }
+      })
+
+      oldDecorationsRef.current = oldEditor.deltaDecorations(oldDecorationsRef.current, oldDecos)
+      newDecorationsRef.current = newEditor.deltaDecorations(newDecorationsRef.current, newDecos)
     }
 
-    // Apply immediately and after a short delay (for layout settling)
     applyDecorations()
     const t = setTimeout(applyDecorations, 300)
     return () => clearTimeout(t)
-  }, [bothReady, diffResult])
+  }, [bothReady, aligned])
 
   // Synchronized scrolling
   useEffect(() => {
@@ -76,6 +131,7 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
       isSyncing.current = true
       newEditor.setScrollTop(e.scrollTop)
       newEditor.setScrollLeft(e.scrollLeft)
+      updateLocationPaneViewport(e.scrollTop, oldEditor)
       isSyncing.current = false
     })
 
@@ -84,11 +140,107 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
       isSyncing.current = true
       oldEditor.setScrollTop(e.scrollTop)
       oldEditor.setScrollLeft(e.scrollLeft)
+      updateLocationPaneViewport(e.scrollTop, oldEditor)
       isSyncing.current = false
     })
 
     return () => { d1.dispose(); d2.dispose() }
   }, [bothReady])
+
+  // Resize canvas to match container and draw location pane
+  useEffect(() => {
+    if (!bothReady) return
+    const canvas = locationPaneRef.current
+    if (canvas) {
+      const resizeObserver = new ResizeObserver(() => {
+        const rect = canvas.parentElement.getBoundingClientRect()
+        canvas.width = 42
+        canvas.height = Math.round(rect.height)
+        drawLocationPane()
+      })
+      resizeObserver.observe(canvas.parentElement)
+      // Initial draw
+      const rect = canvas.parentElement.getBoundingClientRect()
+      canvas.width = 42
+      canvas.height = Math.round(rect.height)
+      drawLocationPane()
+      return () => resizeObserver.disconnect()
+    }
+  }, [bothReady, aligned, drawLocationPane])
+
+  const drawLocationPane = useCallback(() => {
+    const canvas = locationPaneRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    const h = canvas.height
+    const w = canvas.width
+    const total = aligned.lineMap.length
+
+    ctx.fillStyle = '#1b1c1e'
+    ctx.fillRect(0, 0, w, h)
+
+    if (total === 0) return
+
+    // Draw a 1px border on the left
+    ctx.fillStyle = '#2a2b2f'
+    ctx.fillRect(0, 0, 1, h)
+
+    // Draw change markers
+    for (let i = 0; i < total; i++) {
+      const row = aligned.lineMap[i]
+      if (row.type === 'unchanged') continue
+
+      const y = Math.round((i / total) * h)
+      const blockH = Math.max(2, Math.round(h / total))
+
+      if (row.type === 'removed') {
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.7)'
+      } else if (row.type === 'added') {
+        ctx.fillStyle = 'rgba(34, 197, 94, 0.7)'
+      }
+      ctx.fillRect(2, y, w - 3, blockH)
+    }
+  }, [aligned])
+
+  const updateLocationPaneViewport = useCallback((scrollTop, editor) => {
+    const canvas = locationPaneRef.current
+    if (!canvas || !editor) return
+
+    // Redraw the base
+    drawLocationPane()
+
+    const ctx = canvas.getContext('2d')
+    const h = canvas.height
+    const w = canvas.width
+    const total = aligned.lineMap.length
+    if (total === 0) return
+
+    // Draw viewport indicator
+    const lineHeight = editor.getOption(/* lineHeight */ 66) || 19
+    const visibleLines = Math.floor(editor.getLayoutInfo().height / lineHeight)
+    const topLine = Math.floor(scrollTop / lineHeight)
+
+    const viewTop = Math.round((topLine / total) * h)
+    const viewH = Math.max(8, Math.round((visibleLines / total) * h))
+
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.5)'
+    ctx.lineWidth = 1
+    ctx.strokeRect(1, viewTop, w - 2, viewH)
+  }, [aligned, drawLocationPane])
+
+  // Click on location pane to scroll
+  const handleLocationPaneClick = useCallback((e) => {
+    const canvas = locationPaneRef.current
+    const editor = oldEditorRef.current
+    if (!canvas || !editor) return
+
+    const rect = canvas.getBoundingClientRect()
+    const y = e.clientY - rect.top
+    const ratio = y / rect.height
+    const targetLine = Math.floor(ratio * aligned.lineMap.length) + 1
+
+    editor.revealLineInCenter(targetLine)
+  }, [aligned])
 
   const defineTheme = useCallback((monaco) => {
     monaco.editor.defineTheme('neu-dark', {
@@ -106,7 +258,20 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
     })
   }, [])
 
-  const editorOptions = useMemo(() => ({
+  // Custom line number functions — show original line numbers, empty for padding
+  const leftLineNumbers = useCallback((lineNumber) => {
+    const row = aligned.lineMap[lineNumber - 1]
+    if (!row || row.leftNum == null) return ' '
+    return String(row.leftNum)
+  }, [aligned])
+
+  const rightLineNumbers = useCallback((lineNumber) => {
+    const row = aligned.lineMap[lineNumber - 1]
+    if (!row || row.rightNum == null) return ' '
+    return String(row.rightNum)
+  }, [aligned])
+
+  const leftOptions = useMemo(() => ({
     readOnly: true,
     fontSize: 13,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
@@ -114,18 +279,29 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
     scrollBeyondLastLine: false,
     wordWrap: 'on',
     wrappingStrategy: 'advanced',
-    lineNumbers: 'on',
+    lineNumbers: leftLineNumbers,
     renderWhitespace: 'all',
     padding: { top: 12 },
     glyphMargin: true,
     folding: false,
-    scrollbar: {
-      vertical: 'visible',
-      horizontal: 'visible',
-      verticalScrollbarSize: 8,
-      horizontalScrollbarSize: 8,
-    },
-  }), [])
+    scrollbar: { vertical: 'visible', horizontal: 'visible', verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+  }), [leftLineNumbers])
+
+  const rightOptions = useMemo(() => ({
+    readOnly: true,
+    fontSize: 13,
+    fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
+    minimap: { enabled: false },
+    scrollBeyondLastLine: false,
+    wordWrap: 'on',
+    wrappingStrategy: 'advanced',
+    lineNumbers: rightLineNumbers,
+    renderWhitespace: 'all',
+    padding: { top: 12 },
+    glyphMargin: true,
+    folding: false,
+    scrollbar: { vertical: 'visible', horizontal: 'visible', verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+  }), [rightLineNumbers])
 
   const language = getLanguage(fileName)
 
@@ -141,50 +317,44 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
     setEditorsReady(prev => ({ ...prev, new: true }))
   }, [])
 
-  // Stats
-  const addedCount = diffResult.newDecorations.length
-  const removedCount = diffResult.oldDecorations.length
-
   return (
     <div className="fixed inset-0 z-[60] flex flex-col backdrop-animate"
          style={{ backgroundColor: 'rgba(10, 10, 14, 0.95)', backdropFilter: 'blur(10px)' }}>
 
-      {/* Inject diff decoration styles */}
+      {/* Diff decoration styles */}
       <style>{`
         .diff-line-removed { background: rgba(239, 68, 68, 0.12) !important; }
         .diff-line-added { background: rgba(34, 197, 94, 0.12) !important; }
+        .diff-line-padding { background: rgba(100, 100, 100, 0.06) !important; }
         .diff-glyph-removed { background: rgba(239, 68, 68, 0.6); width: 3px !important; margin-left: 3px; }
         .diff-glyph-added { background: rgba(34, 197, 94, 0.6); width: 3px !important; margin-left: 3px; }
       `}</style>
 
-      {/* header */}
+      {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-[#2a2b2f]">
         <div className="flex items-center gap-3">
           <GitCompare size={16} className="text-[#4ade80]" />
           <span className="text-sm font-bold text-[#4ade80]">Compare</span>
           <span className="text-xs text-[#9ca3af] font-mono">{fileName}</span>
-          {bothReady && (
-            <div className="flex items-center gap-2 ml-3">
-              {removedCount > 0 && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 font-medium">
-                  −{removedCount}
-                </span>
-              )}
-              {addedCount > 0 && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-medium">
-                  +{addedCount}
-                </span>
-              )}
-            </div>
-          )}
+          <div className="flex items-center gap-2 ml-3">
+            {aligned.stats.removed > 0 && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 font-medium">
+                −{aligned.stats.removed}
+              </span>
+            )}
+            {aligned.stats.added > 0 && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-medium">
+                +{aligned.stats.added}
+              </span>
+            )}
+          </div>
         </div>
-        <button onClick={onClose}
-                className="p-2 rounded-lg hover:bg-[#272a2d] transition-colors">
+        <button onClick={onClose} className="p-2 rounded-lg hover:bg-[#272a2d] transition-colors">
           <X size={16} className="text-[#9ca3af]" />
         </button>
       </div>
 
-      {/* labels */}
+      {/* Labels */}
       <div className="flex border-b border-[#2a2b2f]">
         <div className="flex-1 px-5 py-1.5 text-[10px] uppercase tracking-widest text-rose-400/70 font-medium border-r border-[#2a2b2f]">
           Old Version
@@ -192,9 +362,11 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
         <div className="flex-1 px-5 py-1.5 text-[10px] uppercase tracking-widest text-emerald-400/70 font-medium">
           New Version
         </div>
+        {/* Location pane label space */}
+        <div className="w-[42px] border-l border-[#2a2b2f]" />
       </div>
 
-      {/* Two side-by-side editors */}
+      {/* Editors + Location Pane */}
       <div className="flex-1 min-h-0 relative flex">
         {/* Loading overlay */}
         {!bothReady && (
@@ -215,27 +387,40 @@ export default function DiffViewer({ oldContent, newContent, fileName, onClose }
           </div>
         )}
 
-        {/* Old (left) editor */}
+        {/* Left (old) editor */}
         <div className="flex-1 min-w-0 border-r border-[#2a2b2f]">
           <Editor
-            value={oldContent || ''}
+            value={aligned.leftText}
             language={language}
             theme="neu-dark"
             beforeMount={defineTheme}
             onMount={handleOldMount}
-            options={editorOptions}
+            options={leftOptions}
           />
         </div>
 
-        {/* New (right) editor */}
+        {/* Right (new) editor */}
         <div className="flex-1 min-w-0">
           <Editor
-            value={newContent || ''}
+            value={aligned.rightText}
             language={language}
             theme="neu-dark"
             beforeMount={defineTheme}
             onMount={handleNewMount}
-            options={editorOptions}
+            options={rightOptions}
+          />
+        </div>
+
+        {/* Location Pane (WinMerge-style minimap) */}
+        <div className="w-[42px] flex-shrink-0 border-l border-[#2a2b2f] cursor-pointer"
+             style={{ backgroundColor: '#1b1c1e' }}
+             onClick={handleLocationPaneClick}>
+          <canvas
+            ref={locationPaneRef}
+            width={42}
+            height={800}
+            className="w-full h-full"
+            style={{ imageRendering: 'pixelated' }}
           />
         </div>
       </div>

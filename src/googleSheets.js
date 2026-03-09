@@ -109,7 +109,7 @@ export function extractSheetIdFromUrl(url) {
 
 /* ── Google Apps Script template ───────────────── */
 
-export function generateAppsScript(folderId = '') {
+export function generateAppsScript(folderId = '', sheetId = '') {
   return `// ========================================
 // Patch Tracker — Google Apps Script
 // Auto-generated — paste into Extensions > Apps Script
@@ -118,10 +118,18 @@ export function generateAppsScript(folderId = '') {
 
 const SHEET_NAME = 'Patches';
 const DRIVE_FOLDER_ID = '${folderId}';
+const SHEET_ID = '${sheetId}';
+
+function getSpreadsheet() {
+  if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
 
 function doGet(e) {
   try {
-    return jsonResponse({ patches: readPatches() });
+    var action = (e && e.parameter && e.parameter.action) || 'pull';
+    if (action === 'pull') return jsonResponse({ patches: readPatches() });
+    return jsonResponse({ error: 'Unknown action' });
   } catch (err) {
     return jsonResponse({ error: err.message });
   }
@@ -159,7 +167,7 @@ function jsonResponse(obj) {
 
 // ── Read patches from the sheet ──
 function readPatches() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getSpreadsheet();
   var sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) return [];
 
@@ -174,11 +182,10 @@ function readPatches() {
     for (var j = 0; j < headers.length; j++) {
       var val = row[j];
       // Parse JSON fields
-      if ((headers[j] === 'codeFiles' || headers[j] === 'dbScripts') &&
-          typeof val === 'string' && val.charAt(0) === '[') {
-        try { val = JSON.parse(val); } catch(e) { val = []; }
+      if (typeof val === 'string' && (val.charAt(0) === '[' || val.charAt(0) === '{')) {
+        try { val = JSON.parse(val); } catch(e) {}
       }
-      patch[headers[j]] = val || '';
+      patch[headers[j]] = (val === 0 || val === false) ? val : (val || '');
     }
     if (patch.id) patches.push(patch);
   }
@@ -187,15 +194,28 @@ function readPatches() {
 
 // ── Write patches to the sheet ──
 function writePatches(patches) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getSpreadsheet();
   var sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
 
-  var headers = [
+  // Collect all unique keys from patches dynamically
+  var baseHeaders = [
     'id', 'name', 'preparedDate', 'releaseDate',
     'environment', 'testingStatus', 'deploymentStatus',
     'responsiblePerson', 'codeFiles', 'dbScripts'
   ];
+  var headerSet = {};
+  for (var h = 0; h < baseHeaders.length; h++) headerSet[baseHeaders[h]] = true;
+  for (var i = 0; i < patches.length; i++) {
+    var keys = Object.keys(patches[i]);
+    for (var k = 0; k < keys.length; k++) {
+      if (!headerSet[keys[k]]) {
+        baseHeaders.push(keys[k]);
+        headerSet[keys[k]] = true;
+      }
+    }
+  }
+  var headers = baseHeaders;
 
   var rows = [headers];
   for (var i = 0; i < patches.length; i++) {
@@ -203,8 +223,8 @@ function writePatches(patches) {
     var row = [];
     for (var j = 0; j < headers.length; j++) {
       var val = p[headers[j]];
-      if (Array.isArray(val)) val = JSON.stringify(val);
-      row.push(val || '');
+      if (Array.isArray(val) || (typeof val === 'object' && val !== null)) val = JSON.stringify(val);
+      row.push((val === 0 || val === false) ? val : (val || ''));
     }
     rows.push(row);
   }

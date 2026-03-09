@@ -585,10 +585,12 @@ function FilterDropdown({ filters, setFilters }) {
 
 function SetupGuide({ copied, onCopy }) {
   const [folderUrl, setFolderUrl] = useState('')
+  const [sheetUrl, setSheetUrl] = useState('')
   const [scriptGenerated, setScriptGenerated] = useState(false)
 
   const folderId = folderUrl ? extractFolderIdFromUrl(folderUrl) : ''
-  const generatedScript = generateAppsScript(folderId)
+  const sheetId = sheetUrl ? extractSheetIdFromUrl(sheetUrl) : ''
+  const generatedScript = generateAppsScript(folderId, sheetId)
 
   const handleCopyGenerated = () => {
     navigator.clipboard.writeText(generatedScript)
@@ -600,7 +602,16 @@ function SetupGuide({ copied, onCopy }) {
     <div className="space-y-4">
       {/* Step 1: Paste URLs */}
       <div className="neu-pressed p-4 space-y-3">
-        <p className="font-semibold text-neu-accent text-xs">Step 1 — Paste your Google Drive folder URL</p>
+        <p className="font-semibold text-neu-accent text-xs">Step 1 — Paste your Google Sheet &amp; Drive folder URLs</p>
+        <input value={sheetUrl} onChange={e => setSheetUrl(e.target.value)}
+               placeholder="https://docs.google.com/spreadsheets/d/..."
+               className="w-full pt-input text-xs font-mono" />
+        {sheetId && (
+          <div className="flex items-center gap-2 text-[10px]">
+            <Check size={11} className="text-emerald-400" />
+            <span className="text-emerald-300">Sheet ID extracted: <code className="text-neu-accent bg-neu-dark px-1 py-0.5 rounded">{sheetId.slice(0, 20)}...</code></span>
+          </div>
+        )}
         <input value={folderUrl} onChange={e => setFolderUrl(e.target.value)}
                placeholder="https://drive.google.com/drive/folders/..."
                className="w-full pt-input text-xs font-mono" />
@@ -616,13 +627,13 @@ function SetupGuide({ copied, onCopy }) {
       <div className="neu-pressed p-4 space-y-3">
         <p className="font-semibold text-neu-accent text-xs">Step 2 — Copy the auto-generated script</p>
         <p className="text-[10px] text-neu-muted">
-          {folderId
-            ? 'Script is ready with your folder ID pre-filled. Copy it below.'
-            : 'Paste your folder URL above first to generate the script with your folder ID.'}
+          {folderId && sheetId
+            ? 'Script is ready with your Sheet ID and folder ID pre-filled. Copy it below.'
+            : 'Paste your Sheet URL and folder URL above first to generate the script.'}
         </p>
         <div className="flex items-center justify-between">
           <span className="text-[10px] uppercase tracking-widest text-neu-muted font-medium">Apps Script Code</span>
-          <button onClick={handleCopyGenerated} disabled={!folderId}
+          <button onClick={handleCopyGenerated} disabled={!folderId || !sheetId}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all disabled:opacity-30"
                   style={{ boxShadow: '2px 2px 6px #111213, -2px -2px 6px #2e3035' }}>
             {scriptGenerated ? <><Check size={11} className="text-emerald-400" /> Copied!</>
